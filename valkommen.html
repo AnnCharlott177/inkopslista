@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="sv">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Välkommen till kursen</title>
+  <style>
+    :root {
+      --bg-top: #fff4e6;
+      --bg-bottom: #ffd8b0;
+      --card: #fffaf3;
+      --accent: #e8590c;
+      --accent-soft: #f59f00;
+      --text: #5c2e0e;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 16px;
+      font-family: "Segoe UI", system-ui, sans-serif;
+      color: var(--text);
+      background: linear-gradient(160deg, var(--bg-top), var(--bg-bottom));
+    }
+
+    .card {
+      max-width: 560px;
+      width: 100%;
+      background: var(--card);
+      border-radius: 20px;
+      padding: 48px 32px;
+      text-align: center;
+      box-shadow: 0 12px 40px rgba(232, 89, 12, 0.18);
+      border-top: 8px solid var(--accent);
+    }
+
+    .sun {
+      font-size: 56px;
+      line-height: 1;
+      margin-bottom: 16px;
+    }
+
+    h1 {
+      margin: 0 0 16px;
+      font-size: clamp(1.8rem, 5vw, 2.6rem);
+      color: var(--accent);
+    }
+
+    p {
+      margin: 0 0 28px;
+      font-size: 1.1rem;
+      line-height: 1.6;
+    }
+
+    .button {
+      display: inline-block;
+      padding: 12px 28px;
+      border-radius: 999px;
+      background: linear-gradient(90deg, var(--accent), var(--accent-soft));
+      color: #fff;
+      font-weight: 600;
+      text-decoration: none;
+      transition: transform 0.15s ease;
+    }
+
+    .button:hover { transform: translateY(-2px); }
+  </style>
+</head>
+<body>
+  <main class="card">
+    <div class="sun">☀️</div>
+    <h1>Välkommen till kursen!</h1>
+    <p>Vad roligt att du är här. Ta det i din egen takt, ställ frågor och ha kul på vägen – vi ses i första lektionen!</p>
+    <a class="button" href="#">Kom igång</a>
+  </main>
+</body>
+</html>

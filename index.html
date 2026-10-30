@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="sv">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#ff7a59">
+  <meta name="description" content="En enkel och glad inköpslista som sparas i webbläsaren.">
+  <title>Inköpslistan</title>
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main class="app">
+    <header class="app-header">
+      <img class="logo" src="favicon.svg" alt="" width="56" height="56">
+      <h1>Inköpslistan</h1>
+      <p class="tagline">Skriv upp det du behöver – bocka av när det ligger i korgen!</p>
+    </header>
+
+    <form id="add-form" class="add-form" autocomplete="off">
+      <label for="new-item" class="visually-hidden">Ny vara</label>
+      <input id="new-item" type="text" placeholder="T.ex. mjölk, bananer, bröd …" maxlength="100" enterkeyhint="done">
+      <button type="submit" class="btn btn-primary">Lägg till</button>
+    </form>
+
+    <section class="list-card" aria-labelledby="list-heading">
+      <h2 id="list-heading" class="visually-hidden">Varor</h2>
+      <p id="counter" class="counter" aria-live="polite"></p>
+      <ul id="list" class="list"></ul>
+      <p id="empty" class="empty">Listan är tom. Dags att fylla på! 🥕</p>
+      <button id="clear-done" type="button" class="btn btn-secondary">Rensa avbockade</button>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>

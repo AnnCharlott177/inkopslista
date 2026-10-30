@@ -1,0 +1,361 @@
+<!doctype html>
+<html lang="sv">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ljudmålning</title>
+<style>
+  :root {
+    --bg: #0d0f1a;
+    --panel: #161a2b;
+    --text: #e8eaf6;
+    --muted: #8a90b0;
+    --accent: #ffd166;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif; overflow: hidden; }
+  body { display: flex; flex-direction: column; }
+  #stage { position: relative; flex: 1; min-height: 0; }
+  canvas { display: block; width: 100%; height: 100%; touch-action: none; cursor: crosshair; }
+  #hint { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+    pointer-events: none; text-align: center; color: var(--muted); font-size: 18px; line-height: 1.6;
+    transition: opacity .4s; padding: 16px; }
+  #hint b { color: var(--text); }
+  .bar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; justify-content: center;
+    padding: 10px 16px; background: var(--panel); border-top: 1px solid #252a44; }
+  .group { display: flex; gap: 6px; align-items: center; }
+  button { font: inherit; color: var(--text); background: #232843; border: 1px solid #323a5e;
+    border-radius: 10px; padding: 8px 12px; cursor: pointer; transition: background .15s, transform .1s; }
+  button:hover { background: #2d3356; }
+  button:active { transform: scale(.96); }
+  #play { background: var(--accent); color: #1a1a1a; border-color: var(--accent); font-weight: 600; min-width: 96px; }
+  .swatch { display: flex; align-items: center; gap: 6px; padding: 6px 10px; }
+  .swatch i { width: 14px; height: 14px; border-radius: 50%; display: inline-block; }
+  .swatch.on { outline: 2px solid var(--text); outline-offset: 1px; }
+  label { color: var(--muted); font-size: 14px; display: flex; align-items: center; gap: 6px; }
+  input[type=range] { width: 110px; accent-color: var(--accent); }
+  @media (max-width: 600px) {
+    .swatch span { display: none; }
+    button { padding: 8px 10px; }
+  }
+</style>
+</head>
+<body>
+<div id="stage">
+  <canvas id="c"></canvas>
+  <div id="hint"><div><b>Rita något!</b><br>Högt upp = ljus ton · Färgen = instrument<br>Tryck <b>Spela</b> (eller mellanslag) för att höra teckningen</div></div>
+</div>
+<div class="bar">
+  <div class="group" id="swatches"></div>
+  <div class="group">
+    <button id="play">▶ Spela</button>
+    <label>Tempo <input id="tempo" type="range" min="60" max="200" value="110"></label>
+  </div>
+  <div class="group">
+    <button id="surprise" title="Rita en slumpmässig melodi">✨ Överraska mig</button>
+    <button id="undo" title="Ångra (Ctrl+Z)">↶ Ångra</button>
+    <button id="clear">Rensa</button>
+  </div>
+</div>
+
+<script>
+const COLS = 32;          // takter i loopen (åttondelar)
+const ROWS = 15;          // 3 oktaver pentatonisk skala
+const PENTA = [0, 2, 4, 7, 9];
+const BASE = 130.81;      // C3
+
+const INSTRUMENTS = [
+  { name: 'Klocka', color: '#ff6fae', type: 'sine',     attack: .005, decay: 1.2, gain: .35, cutoff: 8000 },
+  { name: 'Pluck',  color: '#ffd166', type: 'triangle', attack: .002, decay: .45, gain: .45, cutoff: 5000 },
+  { name: 'Chip',   color: '#4dd8c8', type: 'square',   attack: .005, decay: .25, gain: .12, cutoff: 2500 },
+  { name: 'Moln',   color: '#a78bfa', type: 'sawtooth', attack: .12,  decay: 1.6, gain: .14, cutoff: 1200 },
+];
+
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+const hint = document.getElementById('hint');
+const playBtn = document.getElementById('play');
+const tempoEl = document.getElementById('tempo');
+
+let strokes = [];         // { inst, points: [{x,y}] (0..1), hits: Map<col, Set<row>> }
+let current = null;
+let currentInst = 0;
+let W = 0, H = 0, dpr = 1;
+let layer = document.createElement('canvas');
+let layerDirty = true;
+
+// ---------- Ljud ----------
+let ac = null, master, delaySend;
+function initAudio() {
+  if (ac) { if (ac.state === 'suspended') ac.resume(); return; }
+  ac = new (window.AudioContext || window.webkitAudioContext)();
+  const comp = ac.createDynamicsCompressor();
+  comp.connect(ac.destination);
+  master = ac.createGain(); master.gain.value = .8; master.connect(comp);
+  // lite eko för stämning
+  const delay = ac.createDelay(); delay.delayTime.value = .28;
+  const fb = ac.createGain(); fb.gain.value = .32;
+  const wet = ac.createGain(); wet.gain.value = .35;
+  delaySend = ac.createGain();
+  delaySend.connect(delay); delay.connect(fb); fb.connect(delay); delay.connect(wet); wet.connect(comp);
+}
+
+function freqFor(row) {
+  const oct = Math.floor(row / 5), deg = row % 5;
+  return BASE * Math.pow(2, oct + PENTA[deg] / 12);
+}
+
+function playNote(instIdx, row, t, vol = 1) {
+  const inst = INSTRUMENTS[instIdx];
+  const osc = ac.createOscillator();
+  const filt = ac.createBiquadFilter();
+  const g = ac.createGain();
+  osc.type = inst.type;
+  osc.frequency.value = freqFor(row);
+  filt.type = 'lowpass'; filt.frequency.value = inst.cutoff;
+  const peak = inst.gain * vol;
+  g.gain.setValueAtTime(0.0001, t);
+  g.gain.linearRampToValueAtTime(peak, t + inst.attack);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + inst.attack + inst.decay);
+  osc.connect(filt); filt.connect(g); g.connect(master); g.connect(delaySend);
+  if (instIdx === 0) { // klockan får en överton
+    const o2 = ac.createOscillator(), g2 = ac.createGain();
+    o2.frequency.value = freqFor(row) * 2.76;
+    g2.gain.setValueAtTime(peak * .25, t);
+    g2.gain.exponentialRampToValueAtTime(0.0001, t + .4);
+    o2.connect(g2); g2.connect(master);
+    o2.start(t); o2.stop(t + .45);
+  }
+  osc.start(t); osc.stop(t + inst.attack + inst.decay + .05);
+}
+
+// ---------- Uppspelning ----------
+let playing = false, nextStep = 0, nextTime = 0, timer = null;
+let scheduled = [];       // { step, time }
+let flashes = [];         // { col, row, inst, time }
+const stepDur = () => 60 / tempoEl.value / 2;
+
+function scheduler() {
+  while (nextTime < ac.currentTime + 0.12) {
+    const notes = [];
+    for (const s of strokes) {
+      const rows = s.hits.get(nextStep);
+      if (rows) for (const r of rows) notes.push([s.inst, r]);
+    }
+    const seen = new Set();
+    const uniq = notes.filter(([i, r]) => { const k = i + ':' + r; if (seen.has(k)) return false; seen.add(k); return true; });
+    const vol = uniq.length > 4 ? 4 / uniq.length : 1;
+    for (const [i, r] of uniq.slice(0, 12)) {
+      playNote(i, r, nextTime, vol);
+      flashes.push({ col: nextStep, row: r, inst: i, time: nextTime });
+    }
+    scheduled.push({ step: nextStep, time: nextTime });
+    if (scheduled.length > 8) scheduled.shift();
+    nextTime += stepDur();
+    nextStep = (nextStep + 1) % COLS;
+  }
+}
+
+function togglePlay() {
+  initAudio();
+  playing = !playing;
+  if (playing) {
+    nextStep = 0; nextTime = ac.currentTime + 0.05; scheduled = [];
+    timer = setInterval(scheduler, 25); scheduler();
+    playBtn.textContent = '❚❚ Paus';
+  } else {
+    clearInterval(timer);
+    playBtn.textContent = '▶ Spela';
+  }
+}
+
+// ---------- Ritning ----------
+function computeHits(s) {
+  const hits = new Map();
+  const add = (x, y) => {
+    const col = Math.min(COLS - 1, Math.max(0, Math.floor(x * COLS)));
+    const row = Math.min(ROWS - 1, Math.max(0, Math.floor((1 - y) * ROWS)));
+    if (!hits.has(col)) hits.set(col, new Set());
+    hits.get(col).add(row);
+  };
+  const p = s.points;
+  add(p[0].x, p[0].y);
+  for (let i = 1; i < p.length; i++) {
+    const a = p[i - 1], b = p[i];
+    const n = Math.ceil(Math.hypot(b.x - a.x, b.y - a.y) / 0.004);
+    for (let k = 1; k <= n; k++) add(a.x + (b.x - a.x) * k / n, a.y + (b.y - a.y) * k / n);
+  }
+  s.hits = hits;
+}
+
+const rowOf = y => Math.min(ROWS - 1, Math.max(0, Math.floor((1 - y) * ROWS)));
+let lastPreviewRow = -1, lastPreviewTime = 0;
+
+function pos(e) {
+  const r = canvas.getBoundingClientRect();
+  return { x: (e.clientX - r.left) / r.width, y: (e.clientY - r.top) / r.height };
+}
+
+function preview(p) {
+  const row = rowOf(p.y), now = performance.now();
+  if (row !== lastPreviewRow && now - lastPreviewTime > 60) {
+    playNote(currentInst, row, ac.currentTime, .6);
+    lastPreviewRow = row; lastPreviewTime = now;
+  }
+}
+
+canvas.addEventListener('pointerdown', e => {
+  initAudio();
+  canvas.setPointerCapture(e.pointerId);
+  const p = pos(e);
+  current = { inst: currentInst, points: [p], hits: new Map() };
+  strokes.push(current);
+  computeHits(current);
+  lastPreviewRow = -1; preview(p);
+  hint.style.opacity = 0;
+  layerDirty = true;
+});
+canvas.addEventListener('pointermove', e => {
+  if (!current) return;
+  const p = pos(e);
+  current.points.push(p);
+  computeHits(current);
+  preview(p);
+  layerDirty = true;
+});
+const end = () => { current = null; };
+canvas.addEventListener('pointerup', end);
+canvas.addEventListener('pointercancel', end);
+
+// ---------- Rendering ----------
+function resize() {
+  dpr = window.devicePixelRatio || 1;
+  W = canvas.clientWidth; H = canvas.clientHeight;
+  canvas.width = layer.width = W * dpr;
+  canvas.height = layer.height = H * dpr;
+  layerDirty = true;
+}
+
+function drawLayer() {
+  const g = layer.getContext('2d');
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  g.clearRect(0, 0, W, H);
+  // rutnät
+  for (let c = 0; c <= COLS; c++) {
+    g.strokeStyle = c % 8 === 0 ? 'rgba(255,255,255,.14)' : c % 4 === 0 ? 'rgba(255,255,255,.07)' : 'rgba(255,255,255,.025)';
+    g.beginPath(); g.moveTo(c * W / COLS, 0); g.lineTo(c * W / COLS, H); g.stroke();
+  }
+  for (let r = 0; r <= ROWS; r++) {
+    g.strokeStyle = r % 5 === 0 ? 'rgba(255,255,255,.1)' : 'rgba(255,255,255,.03)';
+    g.beginPath(); g.moveTo(0, r * H / ROWS); g.lineTo(W, r * H / ROWS); g.stroke();
+  }
+  // penseldrag
+  g.lineCap = g.lineJoin = 'round';
+  for (const s of strokes) {
+    const col = INSTRUMENTS[s.inst].color;
+    g.strokeStyle = g.fillStyle = col;
+    g.shadowColor = col; g.shadowBlur = 14;
+    g.lineWidth = 6;
+    if (s.points.length === 1) {
+      g.beginPath(); g.arc(s.points[0].x * W, s.points[0].y * H, 4, 0, 7); g.fill();
+    } else {
+      g.beginPath();
+      s.points.forEach((p, i) => i ? g.lineTo(p.x * W, p.y * H) : g.moveTo(p.x * W, p.y * H));
+      g.stroke();
+    }
+  }
+  g.shadowBlur = 0;
+  layerDirty = false;
+}
+
+function frame() {
+  requestAnimationFrame(frame);
+  if (canvas.clientWidth !== W || canvas.clientHeight !== H) resize();
+  if (!W || !H) return;
+  if (layerDirty) drawLayer();
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.drawImage(layer, 0, 0);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+  if (playing && ac) {
+    const now = ac.currentTime;
+    // spelhuvud
+    let cur = null;
+    for (const s of scheduled) if (s.time <= now) cur = s;
+    if (cur) {
+      const frac = Math.min(1, (now - cur.time) / stepDur());
+      const x = (cur.step + frac) / COLS * W;
+      const grad = ctx.createLinearGradient(x - 40, 0, x, 0);
+      grad.addColorStop(0, 'rgba(255,209,102,0)'); grad.addColorStop(1, 'rgba(255,209,102,.18)');
+      ctx.fillStyle = grad; ctx.fillRect(x - 40, 0, 40, H);
+      ctx.fillStyle = 'rgba(255,209,102,.8)'; ctx.fillRect(x - 1, 0, 2, H);
+    }
+    // blixtar där toner spelas
+    flashes = flashes.filter(f => now - f.time < .6);
+    for (const f of flashes) {
+      const age = now - f.time;
+      if (age < 0) continue;
+      const k = 1 - age / .6;
+      const cx = (f.col + .5) * W / COLS, cy = (ROWS - f.row - .5) * H / ROWS;
+      const col = INSTRUMENTS[f.inst].color;
+      ctx.globalAlpha = k;
+      ctx.fillStyle = col; ctx.shadowColor = col; ctx.shadowBlur = 25;
+      ctx.beginPath(); ctx.arc(cx, cy, 5 + (1 - k) * 18, 0, 7); ctx.fill();
+    }
+    ctx.globalAlpha = 1; ctx.shadowBlur = 0;
+  }
+}
+
+// ---------- Kontroller ----------
+const swWrap = document.getElementById('swatches');
+INSTRUMENTS.forEach((inst, i) => {
+  const b = document.createElement('button');
+  b.className = 'swatch' + (i === 0 ? ' on' : '');
+  b.title = `${inst.name} (${i + 1})`;
+  b.innerHTML = `<i style="background:${inst.color};box-shadow:0 0 8px ${inst.color}"></i><span>${inst.name}</span>`;
+  b.onclick = () => selectInst(i);
+  swWrap.appendChild(b);
+});
+function selectInst(i) {
+  currentInst = i;
+  [...swWrap.children].forEach((b, j) => b.classList.toggle('on', i === j));
+}
+
+function undo() { strokes.pop(); layerDirty = true; if (!strokes.length) hint.style.opacity = 1; }
+function clearAll() { strokes = []; layerDirty = true; hint.style.opacity = 1; }
+
+function surprise() {
+  const n = 2 + Math.floor(Math.random() * 2);
+  for (let k = 0; k < n; k++) {
+    const inst = Math.floor(Math.random() * INSTRUMENTS.length);
+    const pts = [];
+    const x0 = Math.random() * .3, x1 = .6 + Math.random() * .4;
+    const mid = .25 + Math.random() * .5, amp = .1 + Math.random() * .2;
+    const freq = 1 + Math.random() * 3, ph = Math.random() * 6;
+    for (let x = x0; x <= x1; x += .01) pts.push({ x, y: mid + Math.sin(x * freq * 6.28 + ph) * amp });
+    const s = { inst, points: pts, hits: new Map() };
+    computeHits(s); strokes.push(s);
+  }
+  hint.style.opacity = 0; layerDirty = true;
+  if (!playing) togglePlay(); else initAudio();
+}
+
+playBtn.onclick = togglePlay;
+document.getElementById('undo').onclick = undo;
+document.getElementById('clear').onclick = clearAll;
+document.getElementById('surprise').onclick = surprise;
+window.addEventListener('keydown', e => {
+  if (e.target.tagName === 'INPUT') return;
+  if (e.code === 'Space') { e.preventDefault(); togglePlay(); }
+  else if ((e.ctrlKey || e.metaKey) && e.key === 'z') { e.preventDefault(); undo(); }
+  else if (e.key >= '1' && e.key <= '4') selectInst(+e.key - 1);
+});
+window.addEventListener('resize', resize);
+
+resize();
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
